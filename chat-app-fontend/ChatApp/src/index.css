@@ -1,0 +1,25 @@
+@import "tailwindcss";
+/* ===== DISCORD STYLE SCROLLBAR ===== */
+.custom-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 10px;
+  transition: background 0.3s;
+}
+
+/* 👉 Chỉ hiện khi hover */
+.custom-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(34, 197, 94, 0.7); /* xanh */
+}
+
+/* Hover đậm hơn */
+.custom-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 197, 94, 1);
+}
