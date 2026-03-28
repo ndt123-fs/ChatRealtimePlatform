@@ -12,12 +12,26 @@ import { uploadFileApi } from "../services/UploadFileService";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import EmojiPicker from "emoji-picker-react";
 import { MdEmojiEmotions } from "react-icons/md";
+import ringtoneFile from "../assets/ringmess.mp3";
 
+import {
+  BsCameraVideo,
+  BsCameraVideoOff,
+  BsMicFill,
+  BsMicMuteFill,
+  BsTelephoneXFill,
+} from "react-icons/bs";
+import { BsCameraVideoFill } from "react-icons/bs";
 const ChatPage = () => {
   const chatEndRef = useRef(null);
 
   const [typingUser, setTypingUser] = useState(null);
+  const ringtoneRef = useRef(null);
 
+  useEffect(() => {
+    ringtoneRef.current = new Audio(ringtoneFile);
+    ringtoneRef.current.loop = true;
+  }, []);
   const {
     roomId,
 
@@ -58,6 +72,20 @@ const ChatPage = () => {
   const [stompClient, setStompClient] = useState(null);
   const [onlineUsers, setOnlineUsers] = useState([]);
   const currentUserRef = useRef(currentUser);
+  // call video
+  const [showUserList, setShowUserList] = useState(false);
+  const [callState, setCallState] = useState(null);
+  // callState: null | "calling" | "receiving" | "in-call"
+  const [callTarget, setCallTarget] = useState(null);
+  const [incomingCall, setIncomingCall] = useState(null);
+
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCamOff, setIsCamOff] = useState(false);
+  //call video
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
@@ -88,7 +116,203 @@ const ChatPage = () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
+  //call  func video :start , end,answer
 
+  const ICE_SERVERS = {
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  };
+
+  const startCall = async (targetUser) => {
+    setCallTarget(targetUser);
+    setCallState("calling"); // ✅ render video element trước
+    setShowUserList(false);
+
+    // ✅ chờ DOM render
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+    localVideoRef.current.srcObject = stream;
+
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    peerConnectionRef.current = pc;
+
+    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+    pc.ontrack = (e) => {
+      remoteVideoRef.current.srcObject = e.streams[0];
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        stompClient.send(
+          `/app/video/${roomId}`,
+          {},
+          JSON.stringify({
+            type: "VIDEO_ICE",
+            target: targetUser,
+            candidate: e.candidate,
+          }),
+        );
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    stompClient.send(
+      `/app/video/${roomId}`,
+      {},
+      JSON.stringify({
+        type: "VIDEO_OFFER",
+        target: targetUser,
+        offer,
+      }),
+    );
+  };
+
+  const handleVideoSignal = async (data) => {
+    if (data.type === "VIDEO_OFFER") {
+      setIncomingCall(data);
+      setCallState("receiving");
+      ringtoneRef.current?.play();
+    }
+
+    if (data.type === "VIDEO_ANSWER") {
+      await peerConnectionRef.current.setRemoteDescription(data.answer);
+      setCallState("in-call");
+    }
+
+    if (data.type === "VIDEO_ICE") {
+      await peerConnectionRef.current.addIceCandidate(data.candidate);
+    }
+
+    if (data.type === "VIDEO_REJECT") {
+      endCall();
+      alert(`${data.sender} đã từ chối cuộc gọi`);
+    }
+
+    if (data.type === "VIDEO_END") {
+      endCall();
+    }
+  };
+
+  const answerCall = async () => {
+    ringtoneRef.current?.pause();
+    setCallState("in-call"); // ✅ render video element trước
+    setCallTarget(incomingCall.sender);
+
+    // ✅ chờ DOM render
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+    localVideoRef.current.srcObject = stream;
+
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    peerConnectionRef.current = pc;
+
+    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+    pc.ontrack = (e) => {
+      remoteVideoRef.current.srcObject = e.streams[0];
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        stompClient.send(
+          `/app/video/${roomId}`,
+          {},
+          JSON.stringify({
+            type: "VIDEO_ICE",
+            target: incomingCall.sender,
+            candidate: e.candidate,
+          }),
+        );
+      }
+    };
+
+    await pc.setRemoteDescription(incomingCall.offer);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    stompClient.send(
+      `/app/video/${roomId}`,
+      {},
+      JSON.stringify({
+        type: "VIDEO_ANSWER",
+        target: incomingCall.sender,
+        answer,
+      }),
+    );
+  };
+
+  const rejectCall = () => {
+    ringtoneRef.current?.pause();
+    stompClient.send(
+      `/app/video/${roomId}`,
+      {},
+      JSON.stringify({
+        type: "VIDEO_REJECT",
+        target: incomingCall.sender,
+      }),
+    );
+    setCallState(null);
+    setIncomingCall(null);
+  };
+  const endCall = () => {
+    peerConnectionRef.current?.close();
+    peerConnectionRef.current = null;
+
+    if (localVideoRef.current?.srcObject) {
+      localVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current?.srcObject) {
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    if (callState === "in-call") {
+      stompClient.send(
+        `/app/video/${roomId}`,
+        {},
+        JSON.stringify({
+          type: "VIDEO_END",
+          target: callTarget,
+        }),
+      );
+    }
+
+    setCallState(null);
+    setCallTarget(null);
+    setIncomingCall(null);
+  };
+
+  // Thêm 2 hàm này
+  const toggleMute = () => {
+    const stream = localVideoRef.current?.srcObject;
+    if (stream) {
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = !track.enabled;
+      });
+      setIsMuted((prev) => !prev);
+    }
+  };
+
+  const toggleCam = () => {
+    const stream = localVideoRef.current?.srcObject;
+    if (stream) {
+      stream.getVideoTracks().forEach((track) => {
+        track.enabled = !track.enabled;
+      });
+      setIsCamOff((prev) => !prev);
+    }
+  };
+  //call video
   useEffect(() => {
     async function loadMessages() {
       try {
@@ -166,6 +390,10 @@ const ChatPage = () => {
           if (prev.map(normalize).includes(user)) return prev;
           return [...prev, data.user];
         });
+      });
+      client.subscribe(`/user/queue/video/${roomId}`, (msg) => {
+        const data = JSON.parse(msg.body);
+        handleVideoSignal(data);
       });
       //trạng thái onl.off
       client.send(`/app/join/${roomId}`, {}, JSON.stringify({}));
@@ -322,6 +550,13 @@ const ChatPage = () => {
             <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
             Online
           </span>
+          <button
+            onClick={() => setShowUserList(true)}
+            className="flex items-center gap-1 px-3 py-1 bg-blue-500 hover:bg-blue-600 rounded-full text-xs font-semibold transition"
+          >
+            <BsCameraVideoFill size={14} color="white" />
+            Gọi video
+          </button>
         </div>
 
         {/* RIGHT - USER + ACTION */}
@@ -555,6 +790,157 @@ const ChatPage = () => {
           </div>
         </div>
       </div>
+      {/* DANH SÁCH USER ĐỂ GỌI */}
+      {showUserList && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-80">
+            <h2 className="text-white font-semibold mb-4">Chọn người để gọi</h2>
+            {onlineUsers
+              .filter((u) => normalize(u) !== normalize(currentUser))
+              .map((user) => (
+                <button
+                  key={user}
+                  onClick={() => startCall(user)}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-gray-700 transition mb-2"
+                >
+                  <div className="w-9 h-9 rounded-full bg-gray-600 flex items-center justify-center font-bold">
+                    {user[0].toUpperCase()}
+                  </div>
+                  <span className="text-white">{user}</span>
+                  <span className="ml-auto w-2 h-2 bg-green-400 rounded-full" />
+                </button>
+              ))}
+            <button
+              onClick={() => setShowUserList(false)}
+              className="w-full mt-2 py-2 text-gray-400 hover:text-white transition"
+            >
+              Hủy
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* INCOMING CALL */}
+      {callState === "receiving" && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-80 text-center">
+            <div className="w-16 h-16 rounded-full bg-gray-600 flex items-center justify-center text-2xl font-bold mx-auto mb-4">
+              {incomingCall?.sender[0].toUpperCase()}
+            </div>
+            <p className="text-white font-semibold text-lg">
+              {incomingCall?.sender}
+            </p>
+            <p className="text-gray-400 text-sm mb-6">
+              Đang gọi video cho bạn...
+            </p>
+            <div className="flex gap-4 justify-center">
+              <button
+                onClick={rejectCall}
+                className="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center shadow-lg"
+              >
+                <BsTelephoneXFill size={22} color="white" />
+              </button>
+
+              <button
+                onClick={answerCall}
+                className="w-14 h-14 rounded-full bg-green-500 hover:bg-green-600 flex items-center justify-center shadow-lg"
+              >
+                <BsCameraVideoFill size={22} color="white" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIDEO CALL */}
+      {(callState === "calling" || callState === "in-call") && (
+        <div className="fixed inset-0 bg-black z-50 flex flex-col overflow-hidden">
+          <div className="flex-1 relative overflow-hidden">
+            {/* Video người kia - full */}
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
+            {/* <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-contain"
+            /> */}
+            {/* Video mình - góc phải dưới, to hơn */}
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="absolute bottom-20 right-4 w-48 h-36 rounded-2xl border-2 border-white object-cover shadow-2xl z-10"
+            />
+
+            {/* Tên người đang gọi */}
+            <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded-full z-10">
+              <p className="text-white text-sm font-semibold">{callTarget}</p>
+            </div>
+
+            {callState === "calling" && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+                <div className="text-center">
+                  <div className="w-24 h-24 rounded-full bg-gray-600 flex items-center justify-center text-4xl font-bold mx-auto mb-4">
+                    {callTarget?.[0]?.toUpperCase()}
+                  </div>
+                  <p className="text-white text-xl animate-pulse">
+                    Đang gọi {callTarget}...
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Thanh nút bên dưới */}
+          <div className="h-20 flex items-center justify-center gap-6 bg-black/80 shrink-0">
+            {/* Tắt/bật camera */}
+            <button
+              onClick={toggleCam}
+              className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition ${
+                isCamOff
+                  ? "bg-gray-600 hover:bg-gray-700"
+                  : "bg-gray-500 hover:bg-gray-600"
+              }`}
+            >
+              {isCamOff ? (
+                <BsCameraVideoOff size={22} color="white" />
+              ) : (
+                <BsCameraVideo size={22} color="white" />
+              )}
+            </button>
+
+            {/* Kết thúc */}
+            <button
+              onClick={endCall}
+              className="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center shadow-lg"
+            >
+              <BsTelephoneXFill size={22} color="white" />
+            </button>
+
+            {/* Tắt/bật micro */}
+            <button
+              onClick={toggleMute}
+              className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition ${
+                isMuted
+                  ? "bg-gray-600 hover:bg-gray-700"
+                  : "bg-gray-500 hover:bg-gray-600"
+              }`}
+            >
+              {isMuted ? (
+                <BsMicMuteFill size={22} color="white" />
+              ) : (
+                <BsMicFill size={22} color="white" />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
