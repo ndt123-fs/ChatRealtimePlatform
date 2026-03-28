@@ -27,7 +27,7 @@ const ChatPage = () => {
 
   const [typingUser, setTypingUser] = useState(null);
   const ringtoneRef = useRef(null);
-
+  const iceCandidateQueueRef = useRef([]);
   useEffect(() => {
     ringtoneRef.current = new Audio(ringtoneFile);
     ringtoneRef.current.loop = true;
@@ -173,7 +173,33 @@ const ChatPage = () => {
     );
   };
 
-  const handleVideoSignal = async (data) => {
+  // const handleVideoSignal = async (data) => {
+  //   if (data.type === "VIDEO_OFFER") {
+  //     setIncomingCall(data);
+  //     setCallState("receiving");
+  //     ringtoneRef.current?.play();
+  //   }
+
+  //   if (data.type === "VIDEO_ANSWER") {
+  //     await peerConnectionRef.current.setRemoteDescription(data.answer);
+  //     setCallState("in-call");
+  //   }
+
+  //   if (data.type === "VIDEO_ICE") {
+  //     await peerConnectionRef.current.addIceCandidate(data.candidate);
+  //   }
+
+  //   if (data.type === "VIDEO_REJECT") {
+  //     endCall();
+  //     alert(`${data.sender} đã từ chối cuộc gọi`);
+  //   }
+
+  //   if (data.type === "VIDEO_END") {
+  //     endCall();
+  //   }
+  // };
+  const handleVideoSignalRef = useRef(null);
+  handleVideoSignalRef.current = async (data) => {
     if (data.type === "VIDEO_OFFER") {
       setIncomingCall(data);
       setCallState("receiving");
@@ -181,12 +207,33 @@ const ChatPage = () => {
     }
 
     if (data.type === "VIDEO_ANSWER") {
-      await peerConnectionRef.current.setRemoteDescription(data.answer);
+      if (peerConnectionRef.current) {
+        await peerConnectionRef.current.setRemoteDescription(
+          new RTCSessionDescription(data.answer),
+        );
+        // ✅ Flush queue
+        for (const c of iceCandidateQueueRef.current) {
+          try {
+            await peerConnectionRef.current.addIceCandidate(
+              new RTCIceCandidate(c),
+            );
+          } catch (e) {}
+        }
+        iceCandidateQueueRef.current = [];
+      }
       setCallState("in-call");
     }
 
     if (data.type === "VIDEO_ICE") {
-      await peerConnectionRef.current.addIceCandidate(data.candidate);
+      const pc = peerConnectionRef.current;
+      if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (e) {}
+      } else {
+        // ✅ Queue lại
+        iceCandidateQueueRef.current.push(data.candidate);
+      }
     }
 
     if (data.type === "VIDEO_REJECT") {
@@ -198,7 +245,6 @@ const ChatPage = () => {
       endCall();
     }
   };
-
   const answerCall = async () => {
     ringtoneRef.current?.pause();
     setCallState("in-call"); // ✅ render video element trước
@@ -236,10 +282,19 @@ const ChatPage = () => {
       }
     };
 
-    await pc.setRemoteDescription(incomingCall.offer);
+    await pc.setRemoteDescription(
+      new RTCSessionDescription(incomingCall.offer),
+    );
+
+    for (const c of iceCandidateQueueRef.current) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(c));
+      } catch (e) {}
+    }
+    iceCandidateQueueRef.current = [];
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
     stompClient.send(
       `/app/video/${roomId}`,
       {},
@@ -264,15 +319,46 @@ const ChatPage = () => {
     setCallState(null);
     setIncomingCall(null);
   };
+  // const endCall = () => {
+  //   peerConnectionRef.current?.close();
+  //   peerConnectionRef.current = null;
+
+  //   if (localVideoRef.current?.srcObject) {
+  //     localVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+  //     localVideoRef.current.srcObject = null;
+  //   }
+  //   if (remoteVideoRef.current?.srcObject) {
+  //     remoteVideoRef.current.srcObject = null;
+  //   }
+
+  //   if (callState === "in-call") {
+  //     stompClient.send(
+  //       `/app/video/${roomId}`,
+  //       {},
+  //       JSON.stringify({
+  //         type: "VIDEO_END",
+  //         target: callTarget,
+  //       }),
+  //     );
+  //   }
+
+  //   setCallState(null);
+  //   setCallTarget(null);
+  //   setIncomingCall(null);
+  // };
+
+  // Thêm 2 hàm này
   const endCall = () => {
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
+    iceCandidateQueueRef.current = []; // ✅ reset queue
 
     if (localVideoRef.current?.srcObject) {
-      localVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      localVideoRef.current.srcObject.getTracks().forEach((t) => t.stop()); // ✅ stop tracks
       localVideoRef.current.srcObject = null;
     }
     if (remoteVideoRef.current?.srcObject) {
+      remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
       remoteVideoRef.current.srcObject = null;
     }
 
@@ -291,8 +377,6 @@ const ChatPage = () => {
     setCallTarget(null);
     setIncomingCall(null);
   };
-
-  // Thêm 2 hàm này
   const toggleMute = () => {
     const stream = localVideoRef.current?.srcObject;
     if (stream) {
@@ -393,8 +477,12 @@ const ChatPage = () => {
       });
       client.subscribe(`/user/queue/video/${roomId}`, (msg) => {
         const data = JSON.parse(msg.body);
-        handleVideoSignal(data);
+        handleVideoSignalRef.current(data); // ✅
       });
+      // client.subscribe(`/user/queue/video/${roomId}`, (msg) => {
+      //   const data = JSON.parse(msg.body);
+      //   handleVideoSignal(data);
+      // });
       //trạng thái onl.off
       client.send(`/app/join/${roomId}`, {}, JSON.stringify({}));
     });
