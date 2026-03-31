@@ -93,7 +93,7 @@ public class ChatController {
             );
         }
     }
-    //call video
+   // call video
     @MessageMapping("/video/{roomId}")
     public void videoSignal(@DestinationVariable String roomId,
                             @Payload Map<String,Object> signal,
